@@ -955,18 +955,33 @@ local function getStorms()
 end
 
 local function getEF(w)
-    if w < 65 then return "EF-0" elseif w < 86 then return "EF0" elseif w < 111 then return "EF1" elseif w < 136 then return "EF2" elseif w < 166 then return "EF3" elseif w < 201 then return "EF4" else return "EF5" end
+    if w < 65 then return "EF0" elseif w < 86 then return "EF0" elseif w < 111 then return "EF1" elseif w < 136 then return "EF2" elseif w < 166 then return "EF3" elseif w < 201 then return "EF4" else return "EF5" end
 end
 
--- Predict EF based on Intensity & dBZ
-local function getPotentialEF(int, dbz)
-    if int > 180 and dbz > 70 then return "EF5 ☠️"
-    elseif int > 140 and dbz > 60 then return "EF4"
-    elseif int > 110 and dbz > 55 then return "EF3"
-    elseif int > 80 and dbz > 50 then return "EF2"
-    elseif int > 50 then return "EF1"
-    else return "EF0"
+-- Predict EF based on Intensity & dBZ, and compare with current wind
+local function getPotentialEF(int, dbz, curWnd)
+    local potRank = 0
+    if int > 180 and dbz > 70 then potRank = 5
+    elseif int > 140 and dbz > 60 then potRank = 4
+    elseif int > 110 and dbz > 55 then potRank = 3
+    elseif int > 80 and dbz > 50 then potRank = 2
+    elseif int > 50 then potRank = 1
     end
+    
+    local curRank = 0
+    if curWnd then
+        if curWnd >= 201 then curRank = 5
+        elseif curWnd >= 166 then curRank = 4
+        elseif curWnd >= 136 then curRank = 3
+        elseif curWnd >= 111 then curRank = 2
+        elseif curWnd >= 86 then curRank = 1
+        end
+    end
+    
+    local finalRank = math.max(potRank, curRank)
+    if finalRank == 5 then return "EF5 ☠️"
+    elseif finalRank == 0 then return "EF0"
+    else return "EF" .. finalRank end
 end
 
 -- Prediction text based on intensity
@@ -1318,18 +1333,20 @@ task.spawn(function()
             
             -- ===== UPDATE ESP BILLBOARD =====
             -- ===== UPDATE ESP BILLBOARD =====
+            -- ===== UPDATE ESP BILLBOARD =====
             local predText, predColor = getPrediction(int, isTorn, isWeakening, hasDissipated, windTrend)
+            local potEF = getPotentialEF(int, dbz, wnd)
             
             if isTorn then
                 -- === ТОРНАДО АКТИВЕН ===
-                lblStatus.Text = "Статус: 🌪️ ТОРНАДО (" .. ef .. ")"
+                lblStatus.Text = "Статус: 🌪️ ТОРНАДО (" .. ef .. ") | Потенциал: " .. potEF
                 lblStatus.TextColor3 = Color3.fromRGB(255, 50, 50)
                 
                 tagLblTitle.Text = "🌪️ " .. ef .. " — ТОРНАДО"
                 tagLblTitle.TextColor3 = Color3.fromRGB(255, 50, 50)
                 tagLblSpeed.Text = "Скорость: " .. wndRound .. " MPH"
-                tagLblMax.Text = "Макс: " .. maxRound .. " MPH"
-                tagLblStatus.Text = "ТОРНАДО АКТИВЕН"
+                tagLblMax.Text = "Макс: " .. maxRound .. " (Пот: " .. potEF .. ")"
+                tagLblStatus.Text = "АКТИВЕН | " .. potEF
                 tagLblStatus.TextColor3 = Color3.fromRGB(255, 50, 50)
                 tagBgStroke.Color = Color3.fromRGB(255, 50, 50)
                 selSphere.Color3 = Color3.fromRGB(255, 0, 0)
@@ -1373,7 +1390,7 @@ task.spawn(function()
                 lblTvs.TextColor3 = TEXT_GREY
             else
                 -- === ФОРМИРУЕТСЯ / БЕЗОПАСНО ===
-                local potEF = getPotentialEF(int, dbz)
+                local potEF = getPotentialEF(int, dbz, wnd)
                 
                 lblStatus.Text = int > 20 and ("Статус: ⚠️ ФОРМИРУЕТСЯ (Прогноз: " .. potEF .. ")") or "Статус: ☀️ БЕЗОПАСНО"
                 lblStatus.TextColor3 = int > 20 and Color3.fromRGB(255, 200, 50) or TEXT_COLOR
@@ -1393,13 +1410,12 @@ task.spawn(function()
             
             -- ===== UPDATE HUD =====
             if isTorn or isWeakening then
-                hudLblEF.Text = "🌪️ Уровень: " .. ef
+                hudLblEF.Text = "🌪️ Уровень: " .. ef .. " (Пот: " .. potEF .. ")"
                 hudLblEF.TextColor3 = isTorn and Color3.fromRGB(255, 50, 50) or Color3.fromRGB(255, 165, 0)
             elseif hasDissipated then
                 hudLblEF.Text = "🌪️ Был: " .. getEF(maxRound)
                 hudLblEF.TextColor3 = TEXT_GREY
             else
-                local potEF = getPotentialEF(int, dbz)
                 hudLblEF.Text = "🌪️ Прогноз: " .. (int > 20 and potEF or "--")
                 hudLblEF.TextColor3 = int > 20 and Color3.fromRGB(255, 220, 50) or TEXT_COLOR
             end
