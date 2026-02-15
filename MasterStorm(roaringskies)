@@ -23,12 +23,9 @@ local walkSpeed = 60
 local flying = false
 local carFlying = false
 local noclip = false
-local espEnabled = true
-local hudEnabled = true
-local isMenuOpen = true
-local espEnabled = true
-local hudEnabled = true
-local isMenuOpen = true
+local espEnabled = false
+local hudEnabled = false
+local isMenuOpen = true -- Меню открыто, чтобы включить
 local fullbrightOn = false
 local noFog = false
 local removeEffects = false
@@ -46,7 +43,8 @@ local Keybinds = {
     ResetSpeed = Enum.KeyCode.R,
     FullbrightToggle = Enum.KeyCode.B,
     HUDToggle = Enum.KeyCode.H,
-    CarFlyToggle = Enum.KeyCode.G
+    CarFlyToggle = Enum.KeyCode.G,
+    AnchorToggle = Enum.KeyCode.X
 }
 
 local listeningForBind = nil
@@ -462,8 +460,8 @@ end)
 
 -- VISUALS TAB
 local secEsp = createSection(pageVisuals, "Настройки ESP")
-createToggle(secEsp, "ESP", true, function(s) espEnabled = s end)
-createToggle(secEsp, "HUD Панель", true, function(s) 
+createToggle(secEsp, "ESP", false, function(s) espEnabled = s end)
+createToggle(secEsp, "HUD Панель", false, function(s) 
     hudEnabled = s
     -- HUD visibility updated in main loop
 end)
@@ -557,6 +555,33 @@ createToggle(secMove, "Полёт машины (G - E/Q)", false, function(s)
             end
         end
         Notify("Движение", "Полёт машины ВЫКЛ", 2)
+    end
+end)
+
+    end
+end)
+
+local anchorEnabled = false
+createToggle(secMove, "⚓ ANCHOR (X)", false, function(s)
+    anchorEnabled = s
+    local char = player.Character
+    if char then
+        local root = char:FindFirstChild("HumanoidRootPart")
+        -- Если в машине
+        local hum = char:FindFirstChild("Humanoid")
+        if hum and hum.SeatPart then
+            local vehicle = hum.SeatPart:FindFirstAncestorWhichIsA("Model")
+            if vehicle then
+                for _, v in pairs(vehicle:GetDescendants()) do
+                    if v:IsA("BasePart") then v.Anchored = s end
+                end
+                Notify("Anchor", s and "⚓ МАШИНА ЗАФИКСИРОВАНА" or "💨 МАШИНА СВОБОДНА", 1)
+                return
+            end
+        end
+        -- Если пешком
+        if root then root.Anchored = s end
+        Notify("Anchor", s and "⚓ ПЕРСОНАЖ ЗАФИКСИРОВАН" or "💨 ПЕРСОНАЖ СВОБОДЕН", 1)
     end
 end)
 
@@ -737,6 +762,7 @@ createKeybindRow(secBindList, "Ускорение", "SpeedBoost")
 createKeybindRow(secBindList, "Сброс скорости", "ResetSpeed")
 createKeybindRow(secBindList, "Fullbright", "FullbrightToggle")
 createKeybindRow(secBindList, "Полёт машины", "CarFlyToggle")
+createKeybindRow(secBindList, "Anchor (Fix)", "AnchorToggle")
 
 -- ============================================================
 -- === HUD PANEL (Draggable, Toggleable, Neverlose Style) ===
@@ -1124,6 +1150,26 @@ UserInputService.InputBegan:Connect(function(input, processed)
         Lighting.ClockTime = fullbrightOn and 12 or Lighting.ClockTime
         Lighting.Ambient = fullbrightOn and Color3.new(1,1,1) or Color3.new(0,0,0)
         Notify("Бинд", "Яркость " .. (fullbrightOn and "ВКЛ" or "ВЫКЛ"), 1)
+
+    elseif input.KeyCode == Keybinds.AnchorToggle then
+        anchorEnabled = not anchorEnabled
+        local char = player.Character
+        if char then
+            local root = char:FindFirstChild("HumanoidRootPart")
+            local hum = char:FindFirstChild("Humanoid")
+            if hum and hum.SeatPart then
+                local vehicle = hum.SeatPart:FindFirstAncestorWhichIsA("Model")
+                if vehicle then
+                    for _, v in pairs(vehicle:GetDescendants()) do
+                        if v:IsA("BasePart") then v.Anchored = anchorEnabled end
+                    end
+                    Notify("Anchor", anchorEnabled and "⚓ МАШИНА ЗАФИКСИРОВАНА" or "💨 МАШИНА СВОБОДНА", 1)
+                    return
+                end
+            end
+            if root then root.Anchored = anchorEnabled end
+            Notify("Anchor", anchorEnabled and "⚓ ПЕРСОНАЖ ЗАФИКСИРОВАН" or "💨 ПЕРСОНАЖ СВОБОДЕН", 1)
+        end
     end
 end)
 
@@ -1394,30 +1440,29 @@ task.spawn(function()
 end)
 
 -- === MOVEMENT LOOP ===
+-- === MOVEMENT LOOP ===
 RunService.RenderStepped:Connect(function()
+    local cam = Workspace.CurrentCamera.CFrame
+    
     -- Полёт игрока
     if flying and player.Character then
         local hrp = player.Character:FindFirstChild("HumanoidRootPart")
-        local hum = player.Character:FindFirstChild("Humanoid")
-        if hrp and hum and hrp:FindFirstChild("FlyVel") then
-            local cam = Workspace.CurrentCamera.CFrame
-            local moveDir = hum.MoveDirection
+        if hrp and hrp:FindFirstChild("FlyVel") and hrp:FindFirstChild("FlyGyro") then
+            local move = Vector3.zero
+            if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + cam.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - cam.LookVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + cam.RightVector end
+            if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - cam.RightVector end
             
-            -- W/S = вперёд, A/D = вбок
-            local dir = Vector3.zero
-            if moveDir.Magnitude > 0.1 then
-                dir = (cam.LookVector * moveDir.Z * -1) + (cam.RightVector * moveDir.X)
-            end
-            
-            -- Space/Ctrl = вверх/вниз
             local upDown = 0
             if UserInputService:IsKeyDown(Enum.KeyCode.Space) then upDown = 1 end
             if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then upDown = -1 end
             
-            hrp.FlyVel.Velocity = (dir * flySpeed) + Vector3.new(0, upDown * flySpeed, 0)
+            hrp.FlyVel.Velocity = (move * flySpeed) + Vector3.new(0, upDown * flySpeed, 0)
             hrp.FlyGyro.CFrame = cam
         end
     end
+    
     -- Полёт машины
     if carFlying and player.Character then
         local hum = player.Character:FindFirstChildWhichIsA("Humanoid")
@@ -1440,23 +1485,19 @@ RunService.RenderStepped:Connect(function()
                     end
                     
                     if vel and gyro then
-                        local cam = Workspace.CurrentCamera.CFrame
-                        local moveDir = hum.MoveDirection
-                        
-                        -- Управление
-                        local dir = Vector3.zero
-                        if moveDir.Magnitude > 0.1 then
-                            dir = cam.LookVector * moveDir.Z * -1 + cam.RightVector * moveDir.X
-                            dir = Vector3.new(dir.X, 0, dir.Z).Unit -- горизонтальное направление
-                        end
+                        local move = Vector3.zero
+                        if UserInputService:IsKeyDown(Enum.KeyCode.W) then move = move + cam.LookVector end
+                        if UserInputService:IsKeyDown(Enum.KeyCode.S) then move = move - cam.LookVector end
+                        if UserInputService:IsKeyDown(Enum.KeyCode.D) then move = move + cam.RightVector end
+                        if UserInputService:IsKeyDown(Enum.KeyCode.A) then move = move - cam.RightVector end
                         
                         -- E/Q для вертикали
                         local upDown = 0
                         if UserInputService:IsKeyDown(Enum.KeyCode.E) then upDown = 1 end
                         if UserInputService:IsKeyDown(Enum.KeyCode.Q) then upDown = -1 end
                         
-                        vel.Velocity = (dir * carFlySpeed) + Vector3.new(0, upDown * carFlySpeed * 0.8, 0)
-                        gyro.CFrame = CFrame.new(root.Position, root.Position + cam.LookVector)
+                        vel.Velocity = (move * carFlySpeed) + Vector3.new(0, upDown * carFlySpeed * 0.8, 0)
+                        gyro.CFrame = cam 
                     end
                 end
             else
@@ -1466,6 +1507,7 @@ RunService.RenderStepped:Connect(function()
             carFlying = false
         end
     end
+    
     -- Ноклип
     if noclip and player.Character then
         for _, p in pairs(player.Character:GetDescendants()) do if p:IsA("BasePart") then p.CanCollide = false end end
