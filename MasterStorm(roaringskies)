@@ -558,8 +558,6 @@ createToggle(secMove, "Полёт машины (G - E/Q)", false, function(s)
     end
 end)
 
-    end
-end)
 
 local anchorEnabled = false
 createToggle(secMove, "⚓ ANCHOR (X)", false, function(s)
