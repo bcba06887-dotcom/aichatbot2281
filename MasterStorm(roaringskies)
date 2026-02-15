@@ -1,0 +1,1507 @@
+local Players = game:GetService("Players")
+local Workspace = game:GetService("Workspace")
+local RunService = game:GetService("RunService")
+local Lighting = game:GetService("Lighting")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local HttpService = game:GetService("HttpService")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local mouse = player:GetMouse()
+
+-- === НАСТРОЙКИ ===
+local ACCENT = Color3.fromRGB(0, 145, 255) -- Neverlose Blue
+local BG_COLOR = Color3.fromRGB(18, 18, 22)
+local SIDEBAR_COLOR = Color3.fromRGB(24, 24, 29)
+local TEXT_COLOR = Color3.fromRGB(255, 255, 255)
+local TEXT_GREY = Color3.fromRGB(150, 150, 155)
+
+local flySpeed = 150 
+local carFlySpeed = 200
+local walkSpeed = 60 
+local flying = false
+local carFlying = false
+local noclip = false
+local espEnabled = true
+local hudEnabled = true
+local isMenuOpen = true
+local espEnabled = true
+local hudEnabled = true
+local isMenuOpen = true
+local fullbrightOn = false
+local noFog = false
+local removeEffects = false
+
+-- === KEYBINDS ===
+local Keybinds = {
+    MenuToggle = Enum.KeyCode.Insert,
+    FlyToggle = Enum.KeyCode.F,
+    NoclipToggle = Enum.KeyCode.N,
+    ESPToggle = Enum.KeyCode.E,
+    TeleportToStorm = Enum.KeyCode.T,
+    NextTarget = Enum.KeyCode.RightBracket,
+    PrevTarget = Enum.KeyCode.LeftBracket,
+    SpeedBoost = Enum.KeyCode.LeftShift,
+    ResetSpeed = Enum.KeyCode.R,
+    FullbrightToggle = Enum.KeyCode.B,
+    HUDToggle = Enum.KeyCode.H,
+    CarFlyToggle = Enum.KeyCode.G
+}
+
+local listeningForBind = nil
+local bindButtons = {}
+
+-- === ПЕРЕМЕННЫЕ ЛОГИКИ ===
+local targetIndex = 1
+local maxWindsRecorded = 0
+local hasTouchedGround = false
+local currentStormInstance = nil
+local tornadoLiftedAt = 0 -- tick() когда вихри пропали
+local DISSIPATE_DELAY = 10 -- секунд ждать перед "рассеялся"
+local prevWind = 0 -- прошлый ветер (для тренда)
+local prevInt = 0 -- прошлая интенсивность
+local windTrend = 0 -- >0 = растёт, <0 = падает
+local trendSamples = 0 -- сколько семплов собрали
+
+-- === GUI SETUP ===
+local screenGui = Instance.new("ScreenGui", player:WaitForChild("PlayerGui"))
+screenGui.Name = "StormMaster_NL"
+screenGui.ResetOnSpawn = false
+screenGui.IgnoreGuiInset = true
+
+-- BLUR EFFECT
+local blur = Instance.new("BlurEffect", Lighting)
+blur.Name = "MenuBlur"
+blur.Size = 0
+
+-- NOTIFICATION SYSTEM
+local notifContainer = Instance.new("Frame", screenGui)
+notifContainer.Size = UDim2.new(0, 300, 1, 0)
+notifContainer.Position = UDim2.new(1, -320, 0, 50)
+notifContainer.BackgroundTransparency = 1
+
+local function Notify(title, text, duration)
+    local notif = Instance.new("Frame", notifContainer)
+    notif.Size = UDim2.new(1, 0, 0, 60)
+    notif.Position = UDim2.new(1, 100, 0, 0)
+    notif.BackgroundColor3 = SIDEBAR_COLOR
+    notif.BorderSizePixel = 0
+    
+    local line = Instance.new("Frame", notif)
+    line.Size = UDim2.new(0, 3, 1, 0)
+    line.BackgroundColor3 = ACCENT
+    line.BorderSizePixel = 0
+    
+    local t = Instance.new("TextLabel", notif)
+    t.Text = title
+    t.Font = Enum.Font.GothamBold
+    t.TextSize = 14
+    t.TextColor3 = ACCENT
+    t.Position = UDim2.new(0, 15, 0, 10)
+    t.Size = UDim2.new(1, -20, 0, 20)
+    t.BackgroundTransparency = 1
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    
+    local m = Instance.new("TextLabel", notif)
+    m.Text = text
+    m.Font = Enum.Font.Gotham
+    m.TextSize = 12
+    m.TextColor3 = TEXT_COLOR
+    m.Position = UDim2.new(0, 15, 0, 30)
+    m.Size = UDim2.new(1, -20, 0, 20)
+    m.BackgroundTransparency = 1
+    m.TextXAlignment = Enum.TextXAlignment.Left
+
+    local uic = Instance.new("UICorner", notif); uic.CornerRadius = UDim.new(0, 6)
+    
+    notif:TweenPosition(UDim2.new(0, 0, 0, (#notifContainer:GetChildren()-1) * 70), "Out", "Quad", 0.5)
+    
+    task.delay(duration or 3, function()
+        notif:TweenPosition(UDim2.new(1, 100, 0, notif.Position.Y.Offset), "In", "Quad", 0.5)
+        task.wait(0.5)
+        notif:Destroy()
+    end)
+end
+
+-- === MAIN MENU FRAME ===
+local mainFrame = Instance.new("Frame", screenGui)
+mainFrame.Size = UDim2.new(0, 0, 0, 0)
+mainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+mainFrame.BackgroundColor3 = BG_COLOR
+mainFrame.BorderSizePixel = 0
+mainFrame.ClipsDescendants = true
+mainFrame.AnchorPoint = Vector2.new(0.5, 0.5)
+
+local mainCorner = Instance.new("UICorner", mainFrame); mainCorner.CornerRadius = UDim.new(0, 8)
+local mainStroke = Instance.new("UIStroke", mainFrame)
+mainStroke.Color = Color3.fromRGB(40, 40, 45)
+mainStroke.Thickness = 1
+
+-- SIDEBAR
+local sidebar = Instance.new("Frame", mainFrame)
+sidebar.Size = UDim2.new(0, 160, 1, 0)
+sidebar.BackgroundColor3 = SIDEBAR_COLOR
+sidebar.BorderSizePixel = 0
+local sideCorner = Instance.new("UICorner", sidebar); sideCorner.CornerRadius = UDim.new(0, 8)
+local hideCorner = Instance.new("Frame", sidebar)
+hideCorner.Size = UDim2.new(0, 10, 1, 0)
+hideCorner.Position = UDim2.new(1, -10, 0, 0)
+hideCorner.BackgroundColor3 = SIDEBAR_COLOR
+hideCorner.BorderSizePixel = 0
+
+-- LOGO
+local logo = Instance.new("TextLabel", sidebar)
+logo.Size = UDim2.new(1, 0, 0, 50)
+logo.Text = "STORM<font color=\"rgb(0,145,255)\">MASTER</font>"
+logo.RichText = true
+logo.Font = Enum.Font.GothamBlack
+logo.TextSize = 18
+logo.TextColor3 = TEXT_COLOR
+logo.BackgroundTransparency = 1
+
+-- USER CARD
+local userCard = Instance.new("Frame", sidebar)
+userCard.Size = UDim2.new(1, -20, 0, 50)
+userCard.Position = UDim2.new(0, 10, 1, -60)
+userCard.BackgroundColor3 = Color3.fromRGB(30, 30, 35)
+local ucCorner = Instance.new("UICorner", userCard); ucCorner.CornerRadius = UDim.new(0, 6)
+
+local userIcon = Instance.new("ImageLabel", userCard)
+userIcon.Size = UDim2.new(0, 32, 0, 32)
+userIcon.Position = UDim2.new(0, 8, 0.5, -16)
+userIcon.Image = Players:GetUserThumbnailAsync(player.UserId, Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
+userIcon.BackgroundTransparency = 1
+local uicIcon = Instance.new("UICorner", userIcon); uicIcon.CornerRadius = UDim.new(1, 0)
+
+local userName = Instance.new("TextLabel", userCard)
+userName.Size = UDim2.new(1, -50, 0, 20)
+userName.Position = UDim2.new(0, 48, 0, 8)
+userName.Text = player.DisplayName
+userName.Font = Enum.Font.GothamBold
+userName.TextSize = 12
+userName.TextColor3 = TEXT_COLOR
+userName.TextXAlignment = Enum.TextXAlignment.Left
+userName.BackgroundTransparency = 1
+
+local subText = Instance.new("TextLabel", userCard)
+subText.Size = UDim2.new(1, -50, 0, 15)
+subText.Position = UDim2.new(0, 48, 0, 25)
+subText.Text = "Lifetime Sub"
+subText.Font = Enum.Font.Gotham
+subText.TextSize = 10
+subText.TextColor3 = ACCENT
+subText.TextXAlignment = Enum.TextXAlignment.Left
+subText.BackgroundTransparency = 1
+
+-- TABS CONTAINER
+local tabContainer = Instance.new("Frame", sidebar)
+tabContainer.Size = UDim2.new(1, 0, 0, 200)
+tabContainer.Position = UDim2.new(0, 0, 0, 60)
+tabContainer.BackgroundTransparency = 1
+local tabLayout = Instance.new("UIListLayout", tabContainer)
+tabLayout.SortOrder = Enum.SortOrder.LayoutOrder
+tabLayout.Padding = UDim.new(0, 5)
+
+-- PAGES CONTAINER
+local pagesContainer = Instance.new("Frame", mainFrame)
+pagesContainer.Size = UDim2.new(1, -170, 1, -20)
+pagesContainer.Position = UDim2.new(0, 170, 0, 10)
+pagesContainer.BackgroundTransparency = 1
+
+-- DRAG LOGIC (MENU)
+local dragging, dragInput, dragStart, startPos
+local function update(input)
+    local delta = input.Position - dragStart
+    mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+end
+sidebar.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        dragging = true; dragStart = input.Position; startPos = mainFrame.Position
+        input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then dragging = false end end)
+    end
+end)
+sidebar.InputChanged:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseMovement then dragInput = input end end)
+UserInputService.InputChanged:Connect(function(input) if input == dragInput and dragging then update(input) end end)
+
+-- === UI BUILDING FUNCTIONS ===
+
+local currentTab = nil
+local tabs = {}
+
+local function createPage(name)
+    local page = Instance.new("ScrollingFrame", pagesContainer)
+    page.Size = UDim2.new(1, 0, 1, 0)
+    page.BackgroundTransparency = 1
+    page.ScrollBarThickness = 2
+    page.Visible = false
+    page.Name = name
+    
+    local layout = Instance.new("UIListLayout", page)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 10)
+    
+    return page
+end
+
+local function switchTab(name)
+    for _, t in pairs(tabs) do
+        if t.Name == name then
+            t.Btn.TextColor3 = TEXT_COLOR
+            t.Ind.Visible = true
+            t.Page.Visible = true
+            t.Page.Position = UDim2.new(0, 10, 0, 0)
+            TweenService:Create(t.Page, TweenInfo.new(0.3, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {Position = UDim2.new(0,0,0,0)}):Play()
+        else
+            t.Btn.TextColor3 = TEXT_GREY
+            t.Ind.Visible = false
+            t.Page.Visible = false
+        end
+    end
+end
+
+local function createTab(name, iconId)
+    local btn = Instance.new("TextButton", tabContainer)
+    btn.Size = UDim2.new(1, -20, 0, 35)
+    btn.Position = UDim2.new(0, 10, 0, 0)
+    btn.BackgroundTransparency = 1
+    btn.Text = "      " .. name
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 14
+    btn.TextColor3 = TEXT_GREY
+    btn.TextXAlignment = Enum.TextXAlignment.Left
+    
+    local ind = Instance.new("Frame", btn)
+    ind.Size = UDim2.new(0, 3, 0, 20)
+    ind.Position = UDim2.new(0, 0, 0.5, -10)
+    ind.BackgroundColor3 = ACCENT
+    ind.BorderSizePixel = 0
+    ind.Visible = false
+    
+    local page = createPage(name)
+    
+    table.insert(tabs, {Name = name, Btn = btn, Ind = ind, Page = page})
+    
+    btn.MouseButton1Click:Connect(function() switchTab(name) end)
+    return page
+end
+
+local function createSection(page, title)
+    local frame = Instance.new("Frame", page)
+    frame.Size = UDim2.new(1, -10, 0, 30)
+    frame.BackgroundColor3 = Color3.fromRGB(24, 24, 29)
+    frame.BorderSizePixel = 0
+    local uic = Instance.new("UICorner", frame); uic.CornerRadius = UDim.new(0, 6)
+    
+    local t = Instance.new("TextLabel", frame)
+    t.Text = title
+    t.Font = Enum.Font.GothamBold
+    t.TextSize = 12
+    t.TextColor3 = TEXT_GREY
+    t.Position = UDim2.new(0, 10, 0, 5)
+    t.Size = UDim2.new(1, 0, 0, 20)
+    t.BackgroundTransparency = 1
+    t.TextXAlignment = Enum.TextXAlignment.Left
+    
+    local container = Instance.new("Frame", frame)
+    container.Size = UDim2.new(1, -20, 0, 0)
+    container.Position = UDim2.new(0, 10, 0, 30)
+    container.BackgroundTransparency = 1
+    
+    local layout = Instance.new("UIListLayout", container)
+    layout.SortOrder = Enum.SortOrder.LayoutOrder
+    layout.Padding = UDim.new(0, 5)
+    
+    layout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+        container.Size = UDim2.new(1, -20, 0, layout.AbsoluteContentSize.Y)
+        frame.Size = UDim2.new(1, -10, 0, layout.AbsoluteContentSize.Y + 40)
+    end)
+    
+    return container
+end
+
+local function createToggle(parent, text, default, callback)
+    local btn = Instance.new("TextButton", parent)
+    btn.Size = UDim2.new(1, 0, 0, 30)
+    btn.BackgroundTransparency = 1
+    btn.Text = ""
+    
+    local label = Instance.new("TextLabel", btn)
+    label.Text = text
+    label.Font = Enum.Font.Gotham
+    label.TextSize = 13
+    label.TextColor3 = TEXT_COLOR
+    label.Size = UDim2.new(0.8, 0, 1, 0)
+    label.BackgroundTransparency = 1
+    label.TextXAlignment = Enum.TextXAlignment.Left
+    
+    local box = Instance.new("Frame", btn)
+    box.Size = UDim2.new(0, 40, 0, 20)
+    box.Position = UDim2.new(1, -40, 0.5, -10)
+    box.BackgroundColor3 = default and ACCENT or Color3.fromRGB(40,40,45)
+    local buic = Instance.new("UICorner", box); buic.CornerRadius = UDim.new(1, 0)
+    
+    local circle = Instance.new("Frame", box)
+    circle.Size = UDim2.new(0, 16, 0, 16)
+    circle.Position = UDim2.new(default and 1 or 0, default and -18 or 2, 0.5, -8)
+    circle.BackgroundColor3 = TEXT_COLOR
+    local cuic = Instance.new("UICorner", circle); cuic.CornerRadius = UDim.new(1, 0)
+    
+    local state = default
+    
+    btn.MouseButton1Click:Connect(function()
+        state = not state
+        TweenService:Create(box, TweenInfo.new(0.2), {BackgroundColor3 = state and ACCENT or Color3.fromRGB(40,40,45)}):Play()
+        TweenService:Create(circle, TweenInfo.new(0.2), {Position = UDim2.new(state and 1 or 0, state and -18 or 2, 0.5, -8)}):Play()
+        callback(state, btn)
+    end)
+    return btn
+end
+
+local function createButton(parent, text, callback)
+    local btn = Instance.new("TextButton", parent)
+    btn.Size = UDim2.new(1, 0, 0, 30)
+    btn.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+    btn.Text = text
+    btn.TextColor3 = TEXT_COLOR
+    btn.Font = Enum.Font.Gotham
+    btn.TextSize = 13
+    local uic = Instance.new("UICorner", btn); uic.CornerRadius = UDim.new(0, 4)
+    
+    btn.MouseButton1Click:Connect(function()
+        TweenService:Create(btn, TweenInfo.new(0.1), {BackgroundColor3 = ACCENT}):Play()
+        task.wait(0.1)
+        TweenService:Create(btn, TweenInfo.new(0.3), {BackgroundColor3 = Color3.fromRGB(35, 35, 40)}):Play()
+        callback()
+    end)
+end
+
+local function createLabel(parent, text, color)
+    local l = Instance.new("TextLabel", parent)
+    l.Size = UDim2.new(1, 0, 0, 20)
+    l.Text = text
+    l.Font = Enum.Font.Code
+    l.TextSize = 12
+    l.TextColor3 = color or TEXT_GREY
+    l.BackgroundTransparency = 1
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    return l
+end
+
+-- === KEYBIND UI CREATOR ===
+local function createKeybindRow(parent, displayName, bindKey)
+    local frame = Instance.new("Frame", parent)
+    frame.Size = UDim2.new(1, 0, 0, 30)
+    frame.BackgroundTransparency = 1
+
+    local label = Instance.new("TextLabel", frame)
+    label.Size = UDim2.new(0.6, 0, 1, 0)
+    label.Text = displayName
+    label.Font = Enum.Font.Gotham
+    label.TextSize = 13
+    label.TextColor3 = TEXT_COLOR
+    label.BackgroundTransparency = 1
+    label.TextXAlignment = Enum.TextXAlignment.Left
+
+    local btn = Instance.new("TextButton", frame)
+    btn.Size = UDim2.new(0.35, 0, 0, 22)
+    btn.Position = UDim2.new(0.65, 0, 0.5, -11)
+    btn.BackgroundColor3 = Color3.fromRGB(35, 35, 40)
+    btn.Text = Keybinds[bindKey] and Keybinds[bindKey].Name or "None"
+    btn.TextColor3 = ACCENT
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 11
+    local uic = Instance.new("UICorner", btn); uic.CornerRadius = UDim.new(0, 4)
+
+    bindButtons[bindKey] = btn
+
+    btn.MouseButton1Click:Connect(function()
+        if listeningForBind then
+            local oldBtn = bindButtons[listeningForBind]
+            if oldBtn then
+                oldBtn.Text = Keybinds[listeningForBind] and Keybinds[listeningForBind].Name or "None"
+                oldBtn.TextColor3 = ACCENT
+            end
+        end
+        listeningForBind = bindKey
+        btn.Text = "..."
+        btn.TextColor3 = Color3.fromRGB(255, 200, 0)
+    end)
+
+    return frame
+end
+
+-- === BUILD TABS ===
+
+local pageMain = createTab("Home", "")
+local pageVisuals = createTab("Visuals", "")
+local pageMisc = createTab("Misc", "")
+local pageBinds = createTab("Binds", "")
+
+-- HOME TAB
+local secStorm = createSection(pageMain, "Активный шторм")
+local lblStatus = createLabel(secStorm, "Статус: Сканирование...", TEXT_COLOR)
+local lblStats = createLabel(secStorm, "Данные: --")
+local lblMax = createLabel(secStorm, "Пик: --")
+
+local secInteract = createSection(pageMain, "Взаимодействие")
+local btnTarget = createButton(secInteract, "Цель: [Авто]", function() 
+    targetIndex = targetIndex + 1 
+    Notify("Цель", "Переключено на индекс " .. targetIndex, 1)
+end)
+createButton(secInteract, "ТП к шторму (далеко)", function()
+    if currentStormInstance and player.Character then
+        local pivot = currentStormInstance:GetPivot()
+        local dir = (player.Character:GetPivot().Position - pivot.Position)
+        if dir.Magnitude < 1 then dir = Vector3.new(1, 0, 0) end
+        dir = dir.Unit * 400 + Vector3.new(0, 30, 0)
+        player.Character:PivotTo(pivot + dir)
+        Notify("Телепорт", "ТП на безопасном расстоянии!", 2)
+    end
+end)
+
+-- VISUALS TAB
+local secEsp = createSection(pageVisuals, "Настройки ESP")
+createToggle(secEsp, "ESP", true, function(s) espEnabled = s end)
+createToggle(secEsp, "HUD Панель", true, function(s) 
+    hudEnabled = s
+    -- HUD visibility updated in main loop
+end)
+
+createToggle(secEsp, "Убрать туман / атмосферу", false, function(s)
+    noFog = s
+    if s then
+        Lighting.FogEnd = 100000
+        Lighting.FogStart = 100000
+        Lighting.GlobalShadows = false
+        pcall(function() Lighting.Atmosphere:Destroy() end)
+    else
+        Lighting.FogEnd = 5000 -- стандарт (примерно)
+        Lighting.FogStart = 0
+        Lighting.GlobalShadows = true
+        -- Атмосферу вернуть скриптом нельзя, перезаход только, либо просто FogEnd хватит
+    end
+end)
+
+createToggle(secEsp, "Убрать мусор (Debris)", false, function(s)
+    removeEffects = s
+    if s then
+        Notify("Эффекты", "Мусор будет удаляться...", 2)
+    end
+end)
+
+local secRadar = createSection(pageVisuals, "Радар (Предиктор)")
+local lblCape = createLabel(secRadar, "CAPE: --")
+local lblSrh = createLabel(secRadar, "SRH: --")
+local lblTvs = createLabel(secRadar, "TVS: --")
+
+-- MISC TAB
+local secMove = createSection(pageMisc, "Передвижение")
+createToggle(secMove, "Полёт (WASD)", false, function(s) 
+    flying = s
+    if flying then
+        local char = player.Character
+        if char then
+            local hrp = char:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local bv = Instance.new("BodyVelocity", hrp); bv.Name = "FlyVel"; bv.MaxForce = Vector3.new(1e5, 1e5, 1e5); bv.Velocity = Vector3.zero
+                local bg = Instance.new("BodyGyro", hrp); bg.Name = "FlyGyro"; bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5); bg.P = 9000
+                char.Humanoid.PlatformStand = true
+                Notify("Движение", "Полёт ВКЛ", 2)
+            end
+        end
+    else
+        pcall(function() player.Character.HumanoidRootPart.FlyVel:Destroy() end)
+        pcall(function() player.Character.HumanoidRootPart.FlyGyro:Destroy() end)
+        player.Character.Humanoid.PlatformStand = false
+        Notify("Движение", "Полёт ВЫКЛ", 2)
+    end
+end)
+
+createToggle(secMove, "Полёт машины (G - E/Q)", false, function(s)
+    carFlying = s
+    if carFlying then
+        local char = player.Character
+        if char then
+            local seat = char:FindFirstChildWhichIsA("Humanoid") and char.Humanoid.SeatPart
+            if seat then
+                local vehicle = seat:FindFirstAncestorWhichIsA("Model")
+                if vehicle then
+                    local chassis = vehicle.PrimaryPart or vehicle:FindFirstChildWhichIsA("BasePart")
+                    if chassis then
+                        -- Убираем старые
+                        pcall(function() chassis:FindFirstChild("CarFlyVel"):Destroy() end)
+                        pcall(function() chassis:FindFirstChild("CarFlyGyro"):Destroy() end)
+                        local bv = Instance.new("BodyVelocity", chassis); bv.Name = "CarFlyVel"; bv.MaxForce = Vector3.new(1e6, 1e6, 1e6); bv.Velocity = Vector3.zero
+                        local bg = Instance.new("BodyGyro", chassis); bg.Name = "CarFlyGyro"; bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6); bg.P = 9000
+                        Notify("Движение", "Полёт машины ВКЛ", 2)
+                    end
+                end
+            else
+                Notify("Ошибка", "Сядь в машину сначала!", 2)
+                carFlying = false
+            end
+        end
+    else
+        -- Выключить полёт машины
+        local char = player.Character
+        if char then
+            local seat = char:FindFirstChildWhichIsA("Humanoid") and char.Humanoid.SeatPart
+            if seat then
+                local vehicle = seat:FindFirstAncestorWhichIsA("Model")
+                if vehicle then
+                    for _, p in pairs(vehicle:GetDescendants()) do
+                        if p.Name == "CarFlyVel" or p.Name == "CarFlyGyro" then p:Destroy() end
+                    end
+                end
+            end
+        end
+        Notify("Движение", "Полёт машины ВЫКЛ", 2)
+    end
+end)
+
+createToggle(secMove, "Ноклип", false, function(s) noclip = s end)
+createButton(secMove, "Ускорение (+)", function()
+    local char = player.Character
+    if char and char:FindFirstChild("Humanoid") then
+        char.Humanoid.WalkSpeed = char.Humanoid.WalkSpeed + 50
+        Notify("Скорость", "WalkSpeed: " .. char.Humanoid.WalkSpeed, 1)
+    end
+end)
+
+
+local badgeLoop = false
+createToggle(secMove, "🔓 ФАРМ БЕЙДЖИ (300 MPH)", false, function(s)
+    badgeLoop = s
+    if s then
+        Notify("Бейджи", "⚡ СИМУЛЯЦИЯ 300 MPH ВКЛЮЧЕНА! ЖДИ 15-20 СЕКУНД...", 5)
+        
+        task.spawn(function()
+            while badgeLoop do
+                local storms = getStorms()
+                local hum = pChar and pChar:FindFirstChild("Humanoid")
+                local rootPart = hrp
+                
+                -- Если в машине, эмулируем на машину
+                if hum and hum.SeatPart then
+                    local vehicle = hum.SeatPart:FindFirstAncestorWhichIsA("Model")
+                    if vehicle and vehicle.PrimaryPart then
+                        rootPart = vehicle.PrimaryPart
+                    elseif hum.SeatPart then
+                        rootPart = hum.SeatPart
+                    end
+                end
+                
+                if rootPart then
+                    -- 1. Глобальный и Локальный ветер (скан)
+                    local glob = Workspace:FindFirstChild("GlobalWind")
+                    if glob and glob:IsA("NumberValue") then glob.Value = 300 end
+                    
+                    -- Скан ReplicatedStorage и PlayerGui на наличие значений ветра
+                    -- Пытаемся обмануть Mesonet
+                    for _, v in pairs(game:GetDescendants()) do
+                        if v:IsA("NumberValue") or v:IsA("IntValue") then
+                            local n = v.Name:lower()
+                            if (n == "wind" or n == "currentwind" or n == "windspeed" or n == "speed" or n:find("mesonet")) and v.Value < 300 then
+                                v.Value = 300
+                            end
+                        end
+                    end
+
+                    -- 2. Шторма
+                    for _, sc in pairs(storms) do
+                        local cfg = sc:FindFirstChild("Config")
+                        if cfg then
+                            if cfg:FindFirstChild("Winds") then cfg.Winds.Value = 300 end
+                            if cfg:FindFirstChild("Intensity") then cfg.Intensity.Value = 250 end
+                            if cfg:FindFirstChild("dBZ") then cfg.dBZ.Value = 80 end
+                            if cfg:FindFirstChild("Tornado") then 
+                                local t = cfg.Tornado
+                                if t:IsA("BoolValue") then t.Value = true end
+                            end
+                        end
+                        
+                        -- 3. Телепорт детекторов
+                        for _, d in pairs(sc:GetDescendants()) do
+                            if d:IsA("BasePart") and (d.Name == "Radius" or d.Name == "Outer" or d.Name == "Inner" or d.Name:find("Detector")) then
+                                d.CanCollide = false
+                                d.Transparency = 1
+                                d.CFrame = rootPart.CFrame -- Держим на машине или игроке
+                                
+                                -- Эмуляция
+                                firetouchinterest(rootPart, d, 0)
+                                firetouchinterest(rootPart, d, 1)
+                            end
+                        end
+                    end
+                end
+                task.wait(0.1) -- долбим каждые 0.1 сек
+            end
+            Notify("Бейджи", "Симуляция выключена.", 2)
+        end)
+    else
+        Notify("Бейджи", "Останавливаю...", 2)
+    end
+end)
+
+createButton(secMove, "🔥 EXPLOIT ALL BADGES", function()
+    Notify("Exploit", "Brute-forcing badges...", 5)
+    
+    -- 1. Scan for RemoteEvents
+    local events = {}
+    for _, v in pairs(game:GetDescendants()) do
+        if v:IsA("RemoteEvent") and (v.Name:lower():find("badge") or v.Name:lower():find("award") or v.Name:lower():find("give") or v.Name:lower():find("achievement")) then
+            table.insert(events, v)
+        end
+    end
+    
+    if #events > 0 then
+        Notify("Exploit", "Found " .. #events .. " potential remotes!", 3)
+        for _, remote in pairs(events) do
+            -- Try firing with common args
+            pcall(function() remote:FireServer() end)
+            pcall(function() remote:FireServer(player) end)
+            pcall(function() remote:FireServer("All") end)
+            -- Try common badge IDs if known (here just loop 1..100 as example or specific game IDs if known)
+            -- Better approach: just fire without args first
+        end
+    else
+        Notify("Exploit", "No obvious badge remotes found.", 3)
+    end
+    
+    -- 2. Try BadgeService (usually server-only but worth a try)
+    local BS = game:GetService("BadgeService")
+    
+    -- Пытаемся найти ID бейджей через ассеты (сложно без HTTP),
+    -- но можем просто спамить в найденные RemoteEvents, надеясь на уязвимость
+    
+    Notify("Exploit", "Scanning ALL remotes for 'Badge'...", 3)
+    local scanCount = 0
+    for _, v in pairs(game:GetDescendants()) do
+        if v:IsA("RemoteEvent") or v:IsA("RemoteFunction") then
+            local n = v.Name:lower()
+            if n:find("badge") or n:find("award") or n:find("achieve") or n:find("unlock") then
+                scanCount = scanCount + 1
+                -- Спамим аргументами
+                spawn(function()
+                    if v:IsA("RemoteEvent") then
+                        v:FireServer("All")
+                        v:FireServer(player)
+                        v:FireServer()
+                    else
+                        v:InvokeServer("All")
+                    end
+                end)
+            end
+        end
+    end
+    
+    if scanCount > 0 then
+        Notify("Exploit", "Attacked " .. scanCount .. " remotes!", 5)
+    else
+        Notify("Exploit", "No vulnerable remotes found :(", 3)
+    end
+end)
+createButton(secMove, "Сброс скорости", function()
+    if player.Character then player.Character.Humanoid.WalkSpeed = 16 Notify("Скорость", "Скорость сброшена", 1) end
+end)
+
+local secWorld = createSection(pageMisc, "Мир")
+createToggle(secWorld, "Яркость (Fullbright)", false, function(s)
+    fullbrightOn = s
+    Lighting.Brightness = s and 2 or 1
+    Lighting.ClockTime = s and 12 or Lighting.ClockTime
+    Lighting.Ambient = s and Color3.new(1,1,1) or Color3.new(0,0,0)
+end)
+createButton(secWorld, "Выгрузить скрипт", function()
+    flying = false; noclip = false
+    screenGui:Destroy()
+    blur:Destroy()
+end)
+
+-- BINDS TAB
+local secBindInfo = createSection(pageBinds, "Инфо")
+createLabel(secBindInfo, "Нажми кнопку → жми клавишу", TEXT_COLOR)
+createLabel(secBindInfo, "DELETE = убрать бинд", TEXT_GREY)
+
+local secBindList = createSection(pageBinds, "Горячие клавиши")
+createKeybindRow(secBindList, "Меню (Toggle)", "MenuToggle")
+createKeybindRow(secBindList, "Полёт (Toggle)", "FlyToggle")
+createKeybindRow(secBindList, "Ноклип (Toggle)", "NoclipToggle")
+createKeybindRow(secBindList, "ESP (Toggle)", "ESPToggle")
+createKeybindRow(secBindList, "HUD (Toggle)", "HUDToggle")
+createKeybindRow(secBindList, "TP к шторму", "TeleportToStorm")
+createKeybindRow(secBindList, "Следующая цель", "NextTarget")
+createKeybindRow(secBindList, "Предыдущая цель", "PrevTarget")
+createKeybindRow(secBindList, "Ускорение", "SpeedBoost")
+createKeybindRow(secBindList, "Сброс скорости", "ResetSpeed")
+createKeybindRow(secBindList, "Fullbright", "FullbrightToggle")
+createKeybindRow(secBindList, "Полёт машины", "CarFlyToggle")
+
+-- ============================================================
+-- === HUD PANEL (Draggable, Toggleable, Neverlose Style) ===
+-- ============================================================
+
+local hudFrame = Instance.new("Frame", screenGui)
+hudFrame.Size = UDim2.new(0, 260, 0, 200)
+hudFrame.Position = UDim2.new(0, 15, 0.5, -100)
+hudFrame.BackgroundColor3 = BG_COLOR
+hudFrame.BackgroundTransparency = 0.15
+hudFrame.BorderSizePixel = 0
+hudFrame.Active = true
+local hudCorner = Instance.new("UICorner", hudFrame); hudCorner.CornerRadius = UDim.new(0, 8)
+local hudStroke = Instance.new("UIStroke", hudFrame)
+hudStroke.Color = Color3.fromRGB(40, 40, 50)
+hudStroke.Thickness = 1
+
+-- HUD Header (drag handle)
+local hudHeader = Instance.new("Frame", hudFrame)
+hudHeader.Size = UDim2.new(1, 0, 0, 30)
+hudHeader.BackgroundColor3 = SIDEBAR_COLOR
+hudHeader.BorderSizePixel = 0
+local hudHeaderCorner = Instance.new("UICorner", hudHeader); hudHeaderCorner.CornerRadius = UDim.new(0, 8)
+-- Fix bottom corners
+local hudHeaderFix = Instance.new("Frame", hudHeader)
+hudHeaderFix.Size = UDim2.new(1, 0, 0, 10)
+hudHeaderFix.Position = UDim2.new(0, 0, 1, -10)
+hudHeaderFix.BackgroundColor3 = SIDEBAR_COLOR
+hudHeaderFix.BorderSizePixel = 0
+
+-- Accent line at top
+local hudAccentLine = Instance.new("Frame", hudHeader)
+hudAccentLine.Size = UDim2.new(1, 0, 0, 2)
+hudAccentLine.BackgroundColor3 = ACCENT
+hudAccentLine.BorderSizePixel = 0
+
+local hudTitle = Instance.new("TextLabel", hudHeader)
+hudTitle.Size = UDim2.new(1, -10, 1, 0)
+hudTitle.Position = UDim2.new(0, 10, 0, 0)
+hudTitle.Text = "STORM<font color=\"rgb(0,145,255)\">MASTER</font> HUD"
+hudTitle.RichText = true
+hudTitle.Font = Enum.Font.GothamBold
+hudTitle.TextSize = 12
+hudTitle.TextColor3 = TEXT_COLOR
+hudTitle.BackgroundTransparency = 1
+hudTitle.TextXAlignment = Enum.TextXAlignment.Left
+
+-- HUD Drag
+local hudDragging, hudDragInput, hudDragStart, hudStartPos
+local function hudUpdate(input)
+    local delta = input.Position - hudDragStart
+    hudFrame.Position = UDim2.new(hudStartPos.X.Scale, hudStartPos.X.Offset + delta.X, hudStartPos.Y.Scale, hudStartPos.Y.Offset + delta.Y)
+end
+hudHeader.InputBegan:Connect(function(input)
+    if input.UserInputType == Enum.UserInputType.MouseButton1 then
+        hudDragging = true; hudDragStart = input.Position; hudStartPos = hudFrame.Position
+        input.Changed:Connect(function() if input.UserInputState == Enum.UserInputState.End then hudDragging = false end end)
+    end
+end)
+hudHeader.InputChanged:Connect(function(input) if input.UserInputType == Enum.UserInputType.MouseMovement then hudDragInput = input end end)
+UserInputService.InputChanged:Connect(function(input) if input == hudDragInput and hudDragging then hudUpdate(input) end end)
+
+-- HUD Content
+local hudContent = Instance.new("Frame", hudFrame)
+hudContent.Size = UDim2.new(1, -16, 1, -40)
+hudContent.Position = UDim2.new(0, 8, 0, 35)
+hudContent.BackgroundTransparency = 1
+
+local hudLayout = Instance.new("UIListLayout", hudContent)
+hudLayout.SortOrder = Enum.SortOrder.LayoutOrder
+hudLayout.Padding = UDim.new(0, 4)
+
+-- HUD Labels
+local function makeHudLabel(text, color, bold)
+    local l = Instance.new("TextLabel", hudContent)
+    l.Size = UDim2.new(1, 0, 0, 18)
+    l.Text = text
+    l.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
+    l.TextSize = 13
+    l.TextColor3 = color or TEXT_COLOR
+    l.BackgroundTransparency = 1
+    l.TextXAlignment = Enum.TextXAlignment.Left
+    return l
+end
+
+local hudLblEF = makeHudLabel("Уровень: --", TEXT_COLOR, true)
+local hudLblWind = makeHudLabel("Скорость: -- MPH", TEXT_COLOR, false)
+local hudLblMaxWind = makeHudLabel("Макс: -- MPH", TEXT_COLOR, false)
+local hudLblDBZ = makeHudLabel("dBZ: --", TEXT_GREY, false)
+local hudLblInt = makeHudLabel("Интенсивность: --", TEXT_GREY, false)
+
+-- Separator line
+local hudSep = Instance.new("Frame", hudContent)
+hudSep.Size = UDim2.new(1, 0, 0, 1)
+hudSep.BackgroundColor3 = Color3.fromRGB(40, 40, 50)
+hudSep.BorderSizePixel = 0
+
+local hudLblPredict = makeHudLabel("🔮 Прогноз: --", ACCENT, true)
+local hudLblTVS = makeHudLabel("TVS: --", TEXT_GREY, false)
+
+-- Auto-resize HUD
+hudLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Connect(function()
+    hudFrame.Size = UDim2.new(0, 260, 0, hudLayout.AbsoluteContentSize.Y + 50)
+end)
+
+-- ============================================================
+-- === ESP VISUALS (Improved Billboard) ===
+-- ============================================================
+
+local groundAnchor = Instance.new("Part", Workspace)
+groundAnchor.Name = "NL_Anchor"
+groundAnchor.Anchored = true; groundAnchor.CanCollide = false; groundAnchor.Transparency = 1
+local selSphere = Instance.new("SelectionSphere", groundAnchor); selSphere.Color3 = ACCENT; selSphere.Transparency = 0.5
+
+-- Bigger billboard with multi-line info
+local tag = Instance.new("BillboardGui", groundAnchor)
+tag.AlwaysOnTop = true
+tag.Size = UDim2.new(0, 220, 0, 90)
+tag.StudsOffset = Vector3.new(0, 12, 0)
+
+local tagBg = Instance.new("Frame", tag)
+tagBg.Size = UDim2.new(1, 0, 1, 0)
+tagBg.BackgroundColor3 = BG_COLOR
+tagBg.BackgroundTransparency = 0.3
+tagBg.BorderSizePixel = 0
+local tagBgCorner = Instance.new("UICorner", tagBg); tagBgCorner.CornerRadius = UDim.new(0, 6)
+local tagBgStroke = Instance.new("UIStroke", tagBg)
+tagBgStroke.Color = ACCENT
+tagBgStroke.Thickness = 1
+tagBgStroke.Transparency = 0.5
+
+-- ESP accent line top
+local tagAccent = Instance.new("Frame", tagBg)
+tagAccent.Size = UDim2.new(1, 0, 0, 2)
+tagAccent.BackgroundColor3 = ACCENT
+tagAccent.BorderSizePixel = 0
+
+-- ESP Title (EF level + emoji)
+local tagLblTitle = Instance.new("TextLabel", tagBg)
+tagLblTitle.Size = UDim2.new(1, -10, 0, 22)
+tagLblTitle.Position = UDim2.new(0, 5, 0, 5)
+tagLblTitle.BackgroundTransparency = 1
+tagLblTitle.Font = Enum.Font.GothamBold
+tagLblTitle.TextSize = 14
+tagLblTitle.TextColor3 = ACCENT
+tagLblTitle.TextXAlignment = Enum.TextXAlignment.Left
+tagLblTitle.TextStrokeTransparency = 0.5
+tagLblTitle.Text = "🌪️ --"
+
+-- ESP Speed line
+local tagLblSpeed = Instance.new("TextLabel", tagBg)
+tagLblSpeed.Size = UDim2.new(1, -10, 0, 18)
+tagLblSpeed.Position = UDim2.new(0, 5, 0, 28)
+tagLblSpeed.BackgroundTransparency = 1
+tagLblSpeed.Font = Enum.Font.Gotham
+tagLblSpeed.TextSize = 12
+tagLblSpeed.TextColor3 = TEXT_COLOR
+tagLblSpeed.TextXAlignment = Enum.TextXAlignment.Left
+tagLblSpeed.TextStrokeTransparency = 0.5
+tagLblSpeed.Text = "Скорость: -- MPH"
+
+-- ESP Max line
+local tagLblMax = Instance.new("TextLabel", tagBg)
+tagLblMax.Size = UDim2.new(1, -10, 0, 18)
+tagLblMax.Position = UDim2.new(0, 5, 0, 47)
+tagLblMax.BackgroundTransparency = 1
+tagLblMax.Font = Enum.Font.Gotham
+tagLblMax.TextSize = 12
+tagLblMax.TextColor3 = TEXT_GREY
+tagLblMax.TextXAlignment = Enum.TextXAlignment.Left
+tagLblMax.TextStrokeTransparency = 0.5
+tagLblMax.Text = "Макс: -- MPH"
+
+-- ESP Status line
+local tagLblStatus = Instance.new("TextLabel", tagBg)
+tagLblStatus.Size = UDim2.new(1, -10, 0, 16)
+tagLblStatus.Position = UDim2.new(0, 5, 0, 67)
+tagLblStatus.BackgroundTransparency = 1
+tagLblStatus.Font = Enum.Font.GothamBold
+tagLblStatus.TextSize = 11
+tagLblStatus.TextColor3 = ACCENT
+tagLblStatus.TextXAlignment = Enum.TextXAlignment.Left
+tagLblStatus.TextStrokeTransparency = 0.5
+tagLblStatus.Text = "СТАТУС: --"
+
+-- === LOGIC FUNCTIONS ===
+local function getStorms()
+    local list = {}
+    local f = Workspace:FindFirstChild("Storms")
+    if f then for _, c in pairs(f:GetChildren()) do if c:FindFirstChild("Config") then table.insert(list, c) end end end
+    return list
+end
+
+local function getEF(w)
+    if w < 65 then return "EF-0" elseif w < 86 then return "EF0" elseif w < 111 then return "EF1" elseif w < 136 then return "EF2" elseif w < 166 then return "EF3" elseif w < 201 then return "EF4" else return "EF5" end
+end
+
+-- Predict EF based on Intensity & dBZ
+local function getPotentialEF(int, dbz)
+    if int > 180 and dbz > 70 then return "EF5 ☠️"
+    elseif int > 140 and dbz > 60 then return "EF4"
+    elseif int > 110 and dbz > 55 then return "EF3"
+    elseif int > 80 and dbz > 50 then return "EF2"
+    elseif int > 50 then return "EF1"
+    else return "EF0"
+    end
+end
+
+-- Prediction text based on intensity
+-- Prediction text based on intensity
+local function getPrediction(int, isTorn, isWeakening, hasDissipated, windTrend)
+    if isTorn then
+        if int > 150 then return "⚡ СИЛЬНЫЙ ТОРНАДО!", Color3.fromRGB(255, 30, 30)
+        else return "🌪️ ТОРНАДО АКТИВЕН", Color3.fromRGB(255, 80, 80) end
+    elseif isWeakening then
+        return "🟠 Ослабевает... следим", Color3.fromRGB(255, 165, 0)
+    elseif hasDissipated then
+        return "✅ Рассеялся", Color3.fromRGB(100, 255, 100)
+    elseif int > 90 then
+        if windTrend and windTrend < -0.5 then
+            return "↘️ ШТОРМ СЛАБЕЕТ", Color3.fromRGB(100, 255, 100)
+        else
+            return "🔴 Торнадо неизбежен!", Color3.fromRGB(255, 60, 60)
+        end
+    elseif int > 60 then
+        if windTrend and windTrend < -0.5 then
+            return "↘️ РИСК СНИЖАЕТСЯ", Color3.fromRGB(150, 255, 150)
+        else
+            return "🟠 Высокий риск торнадо", Color3.fromRGB(255, 150, 50)
+        end
+    elseif int > 30 then
+        if windTrend and windTrend < -0.5 then
+            return "↘️ ШТОРМ УТИХАЕТ", Color3.fromRGB(180, 255, 180)
+        else
+            return "🟡 Формируется мезоциклон", Color3.fromRGB(255, 220, 50)
+        end
+    elseif int > 10 then
+        return "🔵 Гроза развивается", Color3.fromRGB(100, 180, 255)
+    else
+        return "☀️ Небо чисто", Color3.fromRGB(180, 255, 180)
+    end
+end
+
+-- === KEYBIND HANDLER ===
+UserInputService.InputBegan:Connect(function(input, processed)
+    if processed then return end
+
+    -- Rebind mode
+    if listeningForBind then
+        local btn = bindButtons[listeningForBind]
+        if input.KeyCode == Enum.KeyCode.Delete then
+            Keybinds[listeningForBind] = nil
+            if btn then btn.Text = "None"; btn.TextColor3 = ACCENT end
+            Notify("Бинды", "Бинд убран", 1)
+        elseif input.KeyCode ~= Enum.KeyCode.Unknown then
+            Keybinds[listeningForBind] = input.KeyCode
+            if btn then btn.Text = input.KeyCode.Name; btn.TextColor3 = ACCENT end
+            Notify("Бинды", "Установлено: " .. input.KeyCode.Name, 1)
+        end
+        listeningForBind = nil
+        return
+    end
+
+    -- Execute keybinds
+    if input.KeyCode == Keybinds.MenuToggle then
+        isMenuOpen = not isMenuOpen
+        if isMenuOpen then
+            mainFrame.Visible = true
+            TweenService:Create(mainFrame, TweenInfo.new(0.4), {Size = UDim2.new(0, 500, 0, 350)}):Play()
+            TweenService:Create(blur, TweenInfo.new(0.4), {Size = 15}):Play()
+        else
+            TweenService:Create(mainFrame, TweenInfo.new(0.4), {Size = UDim2.new(0, 0, 0, 0)}):Play()
+            TweenService:Create(blur, TweenInfo.new(0.4), {Size = 0}):Play()
+            task.wait(0.4)
+            if not isMenuOpen then mainFrame.Visible = false end
+        end
+
+    elseif input.KeyCode == Keybinds.FlyToggle then
+        flying = not flying
+        if flying then
+            local char = player.Character
+            if char then
+                local hrp = char:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    local bv = Instance.new("BodyVelocity", hrp); bv.Name = "FlyVel"; bv.MaxForce = Vector3.new(1e5, 1e5, 1e5); bv.Velocity = Vector3.zero
+                    local bg = Instance.new("BodyGyro", hrp); bg.Name = "FlyGyro"; bg.MaxTorque = Vector3.new(1e5, 1e5, 1e5); bg.P = 9000
+                    char.Humanoid.PlatformStand = true
+                    Notify("Бинд", "Полёт ВКЛ", 1)
+                end
+            end
+        else
+            pcall(function() player.Character.HumanoidRootPart.FlyVel:Destroy() end)
+            pcall(function() player.Character.HumanoidRootPart.FlyGyro:Destroy() end)
+            player.Character.Humanoid.PlatformStand = false
+            Notify("Бинд", "Полёт ВЫКЛ", 1)
+        end
+
+    elseif input.KeyCode == Keybinds.NoclipToggle then
+        noclip = not noclip
+        Notify("Бинд", "Ноклип " .. (noclip and "ВКЛ" or "ВЫКЛ"), 1)
+
+    elseif input.KeyCode == Keybinds.ESPToggle then
+        espEnabled = not espEnabled
+        Notify("Бинд", "ESP " .. (espEnabled and "ВКЛ" or "ВЫКЛ"), 1)
+
+    elseif input.KeyCode == Keybinds.HUDToggle then
+        hudEnabled = not hudEnabled
+        hudFrame.Visible = hudEnabled
+        Notify("Бинд", "HUD " .. (hudEnabled and "ВКЛ" or "ВЫКЛ"), 1)
+
+    elseif input.KeyCode == Keybinds.CarFlyToggle then
+        carFlying = not carFlying
+        if carFlying then
+            local char = player.Character
+            if char then
+                local seat = char:FindFirstChildWhichIsA("Humanoid") and char.Humanoid.SeatPart
+                if seat then
+                    local vehicle = seat:FindFirstAncestorWhichIsA("Model")
+                    if vehicle then
+                        local chassis = vehicle.PrimaryPart or vehicle:FindFirstChildWhichIsA("BasePart")
+                        if chassis then
+                            pcall(function() chassis:FindFirstChild("CarFlyVel"):Destroy() end)
+                            pcall(function() chassis:FindFirstChild("CarFlyGyro"):Destroy() end)
+                            local bv = Instance.new("BodyVelocity", chassis); bv.Name = "CarFlyVel"; bv.MaxForce = Vector3.new(1e6, 1e6, 1e6); bv.Velocity = Vector3.zero
+                            local bg = Instance.new("BodyGyro", chassis); bg.Name = "CarFlyGyro"; bg.MaxTorque = Vector3.new(1e6, 1e6, 1e6); bg.P = 9000
+                            Notify("Бинд", "Полёт машины ВКЛ", 1)
+                        end
+                    end
+                else
+                    Notify("Ошибка", "Сядь в машину!", 2)
+                    carFlying = false
+                end
+            end
+        else
+            local char = player.Character
+            if char then
+                local seat = char:FindFirstChildWhichIsA("Humanoid") and char.Humanoid.SeatPart
+                if seat then
+                    local vehicle = seat:FindFirstAncestorWhichIsA("Model")
+                    if vehicle then
+                        for _, p in pairs(vehicle:GetDescendants()) do
+                            if p.Name == "CarFlyVel" or p.Name == "CarFlyGyro" then p:Destroy() end
+                        end
+                    end
+                end
+            end
+            Notify("Бинд", "Полёт машины ВЫКЛ", 1)
+        end
+
+    elseif input.KeyCode == Keybinds.TeleportToStorm then
+        if currentStormInstance and player.Character then
+            local pivot = currentStormInstance:GetPivot()
+            local dir = (player.Character:GetPivot().Position - pivot.Position)
+            if dir.Magnitude < 1 then dir = Vector3.new(1, 0, 0) end
+            dir = dir.Unit * 400 + Vector3.new(0, 30, 0)
+            player.Character:PivotTo(pivot + dir)
+            Notify("Бинд", "ТП на безопасном расстоянии!", 2)
+        else
+            Notify("Бинд", "Шторм не найден", 2)
+        end
+
+    elseif input.KeyCode == Keybinds.NextTarget then
+        targetIndex = targetIndex + 1
+        Notify("Бинд", "Цель → " .. targetIndex, 1)
+
+    elseif input.KeyCode == Keybinds.PrevTarget then
+        targetIndex = math.max(1, targetIndex - 1)
+        Notify("Бинд", "Цель ← " .. targetIndex, 1)
+
+    elseif input.KeyCode == Keybinds.SpeedBoost then
+        if player.Character then
+            player.Character.Humanoid.WalkSpeed = walkSpeed
+            Notify("Бинд", "Скорость: " .. walkSpeed, 1)
+        end
+
+    elseif input.KeyCode == Keybinds.ResetSpeed then
+        if player.Character then
+            player.Character.Humanoid.WalkSpeed = 16
+            Notify("Бинд", "Скорость сброшена", 1)
+        end
+
+    elseif input.KeyCode == Keybinds.FullbrightToggle then
+        fullbrightOn = not fullbrightOn
+        Lighting.Brightness = fullbrightOn and 2 or 1
+        Lighting.ClockTime = fullbrightOn and 12 or Lighting.ClockTime
+        Lighting.Ambient = fullbrightOn and Color3.new(1,1,1) or Color3.new(0,0,0)
+        Notify("Бинд", "Яркость " .. (fullbrightOn and "ВКЛ" or "ВЫКЛ"), 1)
+    end
+end)
+
+-- === MAIN LOOP ===
+task.spawn(function()
+    while true do
+        local storms = getStorms()
+        if #storms > 0 then
+            if targetIndex > #storms then targetIndex = 1 end
+            local sc = storms[targetIndex]
+            if currentStormInstance ~= sc then 
+                currentStormInstance = sc
+                maxWindsRecorded = 0
+                hasTouchedGround = false
+                tornadoLiftedAt = 0
+            end
+            
+            local cfg = sc.Config
+            local int = cfg.Intensity.Value
+            local wnd = cfg.Winds.Value
+            local dbz = cfg.dBZ.Value
+            if wnd > maxWindsRecorded then maxWindsRecorded = wnd end
+            
+            -- === ТРЕНД ВЕТРА ===
+            local windDelta = wnd - prevWind
+            local intDelta = int - prevInt
+            if trendSamples > 3 then
+                -- Сглаживаем тренд
+                windTrend = windTrend * 0.7 + windDelta * 0.3
+            else
+                windTrend = windDelta
+            end
+            prevWind = wnd
+            prevInt = int
+            trendSamples = trendSamples + 1
+            
+            local isWindFalling = windTrend < -0.5 -- ветер падает
+            
+            -- Raycast
+            local rp = RaycastParams.new(); rp.FilterDescendantsInstances = {Workspace.Storms, player.Character}; rp.FilterType = Enum.RaycastFilterType.Exclude
+            local res = Workspace:Raycast(sc:GetPivot().Position, Vector3.new(0,-9000,0), rp)
+            groundAnchor.Position = res and res.Position or sc:GetPivot().Position
+            
+            -- === ДЕТЕКЦИЯ ТОРНАДО (несколько методов) ===
+            local isTorn = false
+            
+            -- Метод 1: Папка Vortices с детьми
+            local vortFolder = sc:FindFirstChild("Vortices")
+            if vortFolder and #vortFolder:GetChildren() > 0 then
+                isTorn = true
+            end
+            
+            -- Метод 2: TouchedDown значение в Config
+            if not isTorn then
+                local td = sc:FindFirstChild("Config") and sc.Config:FindFirstChild("TouchedDown")
+                if td and td.Value == true then isTorn = true end
+            end
+            
+            -- Метод 3: Наличие объекта Tornado / Funnel
+            if not isTorn then
+                local tornado = sc:FindFirstChild("Tornado") or sc:FindFirstChild("Funnel") or sc:FindFirstChild("Vortex")
+                if tornado then isTorn = true end
+            end
+            
+            -- Метод 4: Поиск по потомкам — любой парт с именем Vortex/Funnel/Tornado
+            if not isTorn then
+                for _, d in pairs(sc:GetDescendants()) do
+                    local n = d.Name:lower()
+                    if (n:find("vortex") or n:find("funnel") or n:find("tornado")) and d:IsA("BasePart") then
+                        isTorn = true
+                        break
+                    end
+                end
+            end
+            
+            -- === ВАЛИДАЦИЯ: Если ветер < 30 MPH, то это точно не торнадо (скрытый парт) ===
+            if isTorn and wnd < 30 then
+                isTorn = false
+            end
+            
+            -- Метод 5: УБРАН — высокий ветер не значит торнадо
+            
+            -- === ЛОГИКА ОБНАРУЖЕНИЯ ПРОПАДАНИЯ ===
+            if isTorn then
+                hasTouchedGround = true
+                tornadoLiftedAt = 0 -- торнадо активен, сброс таймера
+            elseif hasTouchedGround and tornadoLiftedAt == 0 then
+                -- Торнадо только что пропал — запускаем таймер
+                tornadoLiftedAt = tick()
+            end
+            
+            -- Определяем состояние
+            local isWeakening = false -- ослабевает (ждём)
+            local hasDissipated = false -- полностью рассеялся
+            
+            if hasTouchedGround and not isTorn then
+                if tornadoLiftedAt > 0 then
+                    local elapsed = tick() - tornadoLiftedAt
+                    if elapsed < DISSIPATE_DELAY then
+                        isWeakening = true -- ещё ждём
+                    else
+                        hasDissipated = true -- точно рассеялся
+                    end
+                end
+            end
+            
+            -- === СБРОС: шторм снова набирает силу после рассеяния ===
+            -- Только если ветер РАСТЁТ (не просто высокий)
+            if hasDissipated and int > 15 and windTrend > 0.5 then
+                hasTouchedGround = false
+                tornadoLiftedAt = 0
+                hasDissipated = false
+                isWeakening = false
+                -- НЕ сбрасываем maxWindsRecorded — пик сохраняем
+            end
+            
+            -- === NO FOG LOOP ===
+            if noFog then
+                Lighting.FogEnd = 100000
+                Lighting.FogStart = 100000
+            end
+            
+            -- === REMOVE EFFECTS LOOP ===
+            if removeEffects and sc then
+                for _, v in pairs(sc:GetDescendants()) do
+                    if v:IsA("ParticleEmitter") or v:IsA("Smoke") or v:IsA("Fire") then
+                        if v.Name:lower():find("debris") or v.Name:lower():find("cloud") or v.Name:lower():find("rain") or v.Name:lower():find("dust") or v.Name:lower():find("dirt") then
+                            v.Enabled = false
+                        end
+                    elseif v:IsA("BasePart") and (v.Name:lower():find("debris") or v.Name:lower():find("rain")) then
+                        v.Transparency = 1
+                    end
+                end
+            end
+            
+            local ef = getEF(math.floor(wnd))
+            local wndRound = math.floor(wnd)
+            local maxRound = math.floor(maxWindsRecorded)
+            local dbzRound = math.floor(dbz * 10) / 10
+            local intRound = math.floor(int * 10) / 10
+            
+            -- ===== UPDATE MENU UI =====
+            lblStats.Text = string.format("dBZ: %.1f | Инт: %.1f", dbzRound, intRound)
+            lblMax.Text = string.format("Пик: %d MPH (%s)", maxRound, getEF(maxRound))
+            
+            lblCape.Text = "CAPE: " .. math.floor(int * 40) .. " j/kg"
+            lblSrh.Text = "SRH: " .. math.floor(wnd * 2) .. " m2/s2"
+            
+            -- ===== UPDATE ESP BILLBOARD =====
+            -- ===== UPDATE ESP BILLBOARD =====
+            local predText, predColor = getPrediction(int, isTorn, isWeakening, hasDissipated, windTrend)
+            
+            if isTorn then
+                -- === ТОРНАДО АКТИВЕН ===
+                lblStatus.Text = "Статус: 🌪️ ТОРНАДО (" .. ef .. ")"
+                lblStatus.TextColor3 = Color3.fromRGB(255, 50, 50)
+                
+                tagLblTitle.Text = "🌪️ " .. ef .. " — ТОРНАДО"
+                tagLblTitle.TextColor3 = Color3.fromRGB(255, 50, 50)
+                tagLblSpeed.Text = "Скорость: " .. wndRound .. " MPH"
+                tagLblMax.Text = "Макс: " .. maxRound .. " MPH"
+                tagLblStatus.Text = "ТОРНАДО АКТИВЕН"
+                tagLblStatus.TextColor3 = Color3.fromRGB(255, 50, 50)
+                tagBgStroke.Color = Color3.fromRGB(255, 50, 50)
+                selSphere.Color3 = Color3.fromRGB(255, 0, 0)
+                
+                lblTvs.Text = "TVS: ПОДТВЕРЖДЁН"
+                lblTvs.TextColor3 = Color3.fromRGB(255, 0, 0)
+                
+            elseif isWeakening then
+                -- === ОСЛАБЕВАЕТ (ждём DISSIPATE_DELAY сек) ===
+                local remaining = math.ceil(DISSIPATE_DELAY - (tick() - tornadoLiftedAt))
+                lblStatus.Text = "Статус: 🟠 ОСЛАБЕВАЕТ... (" .. remaining .. "с)"
+                lblStatus.TextColor3 = Color3.fromRGB(255, 165, 0)
+                
+                tagLblTitle.Text = "🟠 " .. ef .. " — ОСЛАБЕВАЕТ"
+                tagLblTitle.TextColor3 = Color3.fromRGB(255, 165, 0)
+                tagLblSpeed.Text = "Скорость: " .. wndRound .. " MPH"
+                tagLblMax.Text = "Макс: " .. maxRound .. " MPH"
+                tagLblStatus.Text = "СЛЕДИМ... " .. remaining .. "с"
+                tagLblStatus.TextColor3 = Color3.fromRGB(255, 165, 0)
+                tagBgStroke.Color = Color3.fromRGB(255, 165, 0)
+                selSphere.Color3 = Color3.fromRGB(255, 165, 0)
+                
+                lblTvs.Text = "TVS: ОСЛАБЕВАЕТ"
+                lblTvs.TextColor3 = Color3.fromRGB(255, 165, 0)
+                
+            elseif hasDissipated then
+                -- === РАССЕЯЛСЯ (прошло > DISSIPATE_DELAY сек) ===
+                lblStatus.Text = "Статус: ✅ РАССЕЯЛСЯ"
+                lblStatus.TextColor3 = Color3.fromRGB(100, 255, 100)
+                
+                tagLblTitle.Text = "🚫 РАССЕЯЛСЯ"
+                tagLblTitle.TextColor3 = Color3.fromRGB(200, 200, 200)
+                tagLblSpeed.Text = "Скорость: " .. wndRound .. " MPH"
+                tagLblMax.Text = "Макс: " .. maxRound .. " MPH"
+                tagLblStatus.Text = "НЕАКТИВЕН"
+                tagLblStatus.TextColor3 = Color3.fromRGB(150, 150, 150)
+                tagBgStroke.Color = Color3.fromRGB(100, 100, 100)
+                selSphere.Color3 = Color3.fromRGB(100, 100, 100)
+                
+                lblTvs.Text = "TVS: ОТРИЦАТЕЛЬНЫЙ"
+                lblTvs.TextColor3 = TEXT_GREY
+            else
+                -- === ФОРМИРУЕТСЯ / БЕЗОПАСНО ===
+                local potEF = getPotentialEF(int, dbz)
+                
+                lblStatus.Text = int > 20 and ("Статус: ⚠️ ФОРМИРУЕТСЯ (Прогноз: " .. potEF .. ")") or "Статус: ☀️ БЕЗОПАСНО"
+                lblStatus.TextColor3 = int > 20 and Color3.fromRGB(255, 200, 50) or TEXT_COLOR
+                
+                tagLblTitle.Text = int > 20 and ("⚠️ МЕЗОЦИКЛОН") or "☀️ ШТОРМ"
+                tagLblTitle.TextColor3 = int > 20 and Color3.fromRGB(255, 255, 0) or ACCENT
+                tagLblSpeed.Text = "Ветер: " .. wndRound .. " MPH"
+                tagLblMax.Text = int > 20 and ("Прогноз: " .. potEF) or "Потенциал: --"
+                tagLblStatus.Text = int > 60 and "ВЫСОКИЙ РИСК" or (int > 20 and "ФОРМИРУЕТСЯ" or "БЕЗОПАСНО")
+                tagLblStatus.TextColor3 = int > 60 and Color3.fromRGB(255, 100, 0) or (int > 20 and Color3.fromRGB(255, 220, 50) or Color3.fromRGB(100, 255, 100))
+                tagBgStroke.Color = int > 20 and Color3.fromRGB(255, 255, 0) or ACCENT
+                selSphere.Color3 = int > 20 and Color3.fromRGB(255, 255, 0) or ACCENT
+                
+                lblTvs.Text = int > 90 and "TVS: СИЛЬНЫЙ" or "TVS: НЕТ"
+                lblTvs.TextColor3 = int > 90 and Color3.fromRGB(255, 100, 0) or TEXT_GREY
+            end
+            
+            -- ===== UPDATE HUD =====
+            if isTorn or isWeakening then
+                hudLblEF.Text = "🌪️ Уровень: " .. ef
+                hudLblEF.TextColor3 = isTorn and Color3.fromRGB(255, 50, 50) or Color3.fromRGB(255, 165, 0)
+            elseif hasDissipated then
+                hudLblEF.Text = "🌪️ Был: " .. getEF(maxRound)
+                hudLblEF.TextColor3 = TEXT_GREY
+            else
+                local potEF = getPotentialEF(int, dbz)
+                hudLblEF.Text = "🌪️ Прогноз: " .. (int > 20 and potEF or "--")
+                hudLblEF.TextColor3 = int > 20 and Color3.fromRGB(255, 220, 50) or TEXT_COLOR
+            end
+            hudLblWind.Text = "💨 Скорость: " .. wndRound .. " MPH"
+            hudLblMaxWind.Text = "📈 Макс: " .. maxRound .. " MPH (" .. getEF(maxRound) .. ")"
+            hudLblDBZ.Text = "📡 dBZ: " .. dbzRound
+            hudLblInt.Text = "⚡ Интенсивность: " .. intRound
+            hudLblPredict.Text = "🔮 " .. predText
+            hudLblPredict.TextColor3 = predColor
+            hudLblTVS.Text = lblTvs.Text
+            hudLblTVS.TextColor3 = lblTvs.TextColor3
+            
+            selSphere.Visible = espEnabled
+            tag.Enabled = espEnabled
+            hudFrame.Visible = hudEnabled
+        else
+            lblStatus.Text = "Статус: НЕТ ШТОРМОВ"
+            selSphere.Visible = false
+            tag.Enabled = false
+            
+            -- HUD idle
+            hudLblEF.Text = "🌪️ Уровень: --"
+            hudLblEF.TextColor3 = TEXT_GREY
+            hudLblWind.Text = "💨 Скорость: --"
+            hudLblMaxWind.Text = "📈 Макс: --"
+            hudLblDBZ.Text = "📡 dBZ: --"
+            hudLblInt.Text = "⚡ Интенсивность: --"
+            hudLblPredict.Text = "🔮 ☀️ Небо чисто"
+            hudLblPredict.TextColor3 = Color3.fromRGB(180, 255, 180)
+            hudLblTVS.Text = "TVS: НЕТ"
+            hudLblTVS.TextColor3 = TEXT_GREY
+            hudFrame.Visible = hudEnabled
+        end
+        task.wait(0.1)
+    end
+end)
+
+-- === MOVEMENT LOOP ===
+RunService.RenderStepped:Connect(function()
+    -- Полёт игрока
+    if flying and player.Character then
+        local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+        local hum = player.Character:FindFirstChild("Humanoid")
+        if hrp and hum and hrp:FindFirstChild("FlyVel") then
+            local cam = Workspace.CurrentCamera.CFrame
+            local moveDir = hum.MoveDirection
+            
+            -- W/S = вперёд, A/D = вбок
+            local dir = Vector3.zero
+            if moveDir.Magnitude > 0.1 then
+                dir = (cam.LookVector * moveDir.Z * -1) + (cam.RightVector * moveDir.X)
+            end
+            
+            -- Space/Ctrl = вверх/вниз
+            local upDown = 0
+            if UserInputService:IsKeyDown(Enum.KeyCode.Space) then upDown = 1 end
+            if UserInputService:IsKeyDown(Enum.KeyCode.LeftControl) then upDown = -1 end
+            
+            hrp.FlyVel.Velocity = (dir * flySpeed) + Vector3.new(0, upDown * flySpeed, 0)
+            hrp.FlyGyro.CFrame = cam
+        end
+    end
+    -- Полёт машины
+    if carFlying and player.Character then
+        local hum = player.Character:FindFirstChildWhichIsA("Humanoid")
+        if hum and hum.SeatPart then
+            local vehicle = hum.SeatPart:FindFirstAncestorWhichIsA("Model")
+            if vehicle then
+                -- Ищем главную часть для физики (обычно Chassis или PrimaryPart)
+                local root = vehicle.PrimaryPart or vehicle:FindFirstChildWhichIsA("BasePart", true)
+                
+                if root then
+                    local vel = root:FindFirstChild("CarFlyVel")
+                    local gyro = root:FindFirstChild("CarFlyGyro")
+                    
+                    -- Если нет, создаём на лету (на случай респавна)
+                    if not vel then 
+                        vel = Instance.new("BodyVelocity", root); vel.Name = "CarFlyVel"; vel.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+                    end
+                    if not gyro then
+                        gyro = Instance.new("BodyGyro", root); gyro.Name = "CarFlyGyro"; gyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge); gyro.P = 10000
+                    end
+                    
+                    if vel and gyro then
+                        local cam = Workspace.CurrentCamera.CFrame
+                        local moveDir = hum.MoveDirection
+                        
+                        -- Управление
+                        local dir = Vector3.zero
+                        if moveDir.Magnitude > 0.1 then
+                            dir = cam.LookVector * moveDir.Z * -1 + cam.RightVector * moveDir.X
+                            dir = Vector3.new(dir.X, 0, dir.Z).Unit -- горизонтальное направление
+                        end
+                        
+                        -- E/Q для вертикали
+                        local upDown = 0
+                        if UserInputService:IsKeyDown(Enum.KeyCode.E) then upDown = 1 end
+                        if UserInputService:IsKeyDown(Enum.KeyCode.Q) then upDown = -1 end
+                        
+                        vel.Velocity = (dir * carFlySpeed) + Vector3.new(0, upDown * carFlySpeed * 0.8, 0)
+                        gyro.CFrame = CFrame.new(root.Position, root.Position + cam.LookVector)
+                    end
+                end
+            else
+                carFlying = false
+            end
+        else
+            carFlying = false
+        end
+    end
+    -- Ноклип
+    if noclip and player.Character then
+        for _, p in pairs(player.Character:GetDescendants()) do if p:IsA("BasePart") then p.CanCollide = false end end
+    end
+end)
+
+-- === INJECT ANIMATION ===
+mainFrame.Size = UDim2.new(0, 0, 0, 0)
+mainFrame.Visible = false
+hudFrame.Visible = false -- Hide until loaded
+
+TweenService:Create(blur, TweenInfo.new(1), {Size = 24}):Play()
+
+local splash = Instance.new("TextLabel", screenGui)
+splash.Size = UDim2.new(1, 0, 1, 0)
+splash.Text = "STORM<font color=\"rgb(0,145,255)\">MASTER</font>"
+splash.RichText = true
+splash.Font = Enum.Font.GothamBlack
+splash.TextSize = 40
+splash.TextColor3 = Color3.new(1,1,1)
+splash.TextTransparency = 1
+splash.BackgroundTransparency = 1
+
+task.wait(0.5)
+TweenService:Create(splash, TweenInfo.new(1), {TextTransparency = 0}):Play()
+task.wait(1.5)
+TweenService:Create(splash, TweenInfo.new(0.5), {TextTransparency = 1}):Play()
+task.wait(0.5)
+splash:Destroy()
+
+-- Open Menu + HUD
+mainFrame.Visible = true
+hudFrame.Visible = hudEnabled
+TweenService:Create(mainFrame, TweenInfo.new(0.6, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {Size = UDim2.new(0, 500, 0, 350)}):Play()
+TweenService:Create(blur, TweenInfo.new(1), {Size = 15}):Play()
+
+switchTab("Home")
+Notify("Добро пожаловать", "Загружено! Insert = меню, H = HUD", 3)
+Notify("Подсказка", "Вкладка 'Binds' для настройки хоткеев", 4)
